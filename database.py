@@ -123,6 +123,41 @@ class Database:
         await self.connection.commit()
         return cursor.lastrowid
 
+    async def end_shift(self, shift_id):
+        """Завершаем смену"""
+        await self.connection.execute(
+            'UPDATE shifts SET end_time = CURRENT_TIMESTAMP, status = "completed" WHERE id = ?',
+            (shift_id,)
+        )
+        await self.connection.commit()
+        logger.info(f"✅ Смена {shift_id} завершена")
+        return True
+
+    async def get_active_shift(self, driver_id):
+        """Получаем активную смену водителя"""
+        cursor = await self.connection.execute(
+            'SELECT id, equipment_id FROM shifts WHERE driver_id = ? AND status = "active" ORDER BY start_time DESC LIMIT 1',
+            (driver_id,)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row
+
+    async def get_driver_shifts(self, driver_id, limit=10):
+        """Получаем последние смены водителя"""
+        cursor = await self.connection.execute('''
+            SELECT s.id, s.start_time, s.end_time, s.status, 
+                   e.name, e.model
+            FROM shifts s
+            LEFT JOIN equipment e ON s.equipment_id = e.id
+            WHERE s.driver_id = ?
+            ORDER BY s.start_time DESC
+            LIMIT ?
+        ''', (driver_id, limit))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return rows
+
     async def close(self):
         """Закрываем соединение с базой"""
         await self.connection.close()
