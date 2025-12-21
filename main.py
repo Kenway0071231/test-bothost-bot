@@ -28,7 +28,7 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 # ===============================================
 
-# ========== ОБРАБОТЧИКИ КОМАНД (остальной код БЕЗ изменений) ==========
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -38,11 +38,24 @@ async def cmd_start(message: types.Message):
         full_name=f"{message.from_user.first_name} {message.from_user.last_name or ''}"
     )
     
-    keyboard = [
-        [types.KeyboardButton(text="🚛 Начать смену")],
-        [types.KeyboardButton(text="📋 Мои смены")],
-        [types.KeyboardButton(text="ℹ️  Информация")]
-    ]
+    # Проверяем, есть ли активная смена
+    active_shift = await db.get_active_shift(message.from_user.id)
+    
+    if active_shift:
+        # Если есть активная смена - показываем кнопку завершения
+        keyboard = [
+            [types.KeyboardButton(text="⏹️ Завершить смену")],
+            [types.KeyboardButton(text="📋 Мои смены")],
+            [types.KeyboardButton(text="ℹ️  Информация")]
+        ]
+    else:
+        # Если нет активной смены - показываем кнопку начала
+        keyboard = [
+            [types.KeyboardButton(text="🚛 Начать смену")],
+            [types.KeyboardButton(text="📋 Мои смены")],
+            [types.KeyboardButton(text="ℹ️  Информация")]
+        ]
+    
     reply_markup = types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
     
     await message.answer(
@@ -241,30 +254,91 @@ async def process_pre_inspection(message: types.Message, state: FSMContext):
     
     await message.answer("Пожалуйста, используйте кнопки меню.")
 
+@dp.message(F.text == "⏹️ Завершить смену")
+async def end_shift_process(message: types.Message):
+    """Завершаем активную смену"""
+    
+    # Получаем активную смену
+    active_shift = await db.get_active_shift(message.from_user.id)
+    
+    if not active_shift:
+        await message.answer("❌ У вас нет активной смены.")
+        return
+    
+    shift_id, equipment_id = active_shift
+    
+    # Завершаем смену в базе
+    await db.end_shift(shift_id)
+    
+    # Получаем название техники для красивого ответа
+    cursor = await db.connection.execute(
+        'SELECT name, model FROM equipment WHERE id = ?', 
+        (equipment_id,)
+    )
+    equipment = await cursor.fetchone()
+    await cursor.close()
+    
+    if equipment:
+        eq_name, eq_model = equipment
+        equipment_text = f"{eq_name} ({eq_model})"
+    else:
+        equipment_text = "неизвестная техника"
+    
+    await message.answer(
+        f"✅ СМЕНА ЗАВЕРШЕНА!\n\n"
+        f"Техника: {equipment_text}\n"
+        f"ID смены: {shift_id}\n"
+        f"Время окончания: {message.date.strftime('%H:%M %d.%m.%Y')}\n\n"
+        f"Спасибо за работу! Отдыхайте."
+    )
+    
+    # Обновляем меню (уберем кнопку завершения)
+    await cmd_start(message)
+
 @dp.message(F.text == "📋 Мои смены")
 async def show_my_shifts(message: types.Message):
     """Показываем историю смен водителя"""
-    # Временно заглушка
-    await message.answer(
-        "📊 ИСТОРИЯ СМЕН\n\n"
-        "Этот раздел в разработке.\n"
-        "Скоро здесь появится:\n"
-        "- История ваших смен\n"
-        "- Статистика\n"
-        "- Отчеты\n\n"
-        "Сейчас вы можете начать новую смену."
-    )
+    
+    # Получаем смены из базы
+    shifts = await db.get_driver_shifts(message.from_user.id, limit=5)
+    
+    if not shifts:
+        await message.answer("📭 У вас ещё не было смен.")
+        return
+    
+    # Формируем сообщение
+    text = "📊 ПОСЛЕДНИЕ СМЕНЫ:\n\n"
+    
+    for shift in shifts:
+        shift_id, start_time, end_time, status, eq_name, eq_model = shift
+        
+        # Форматируем время
+        start_str = start_time[:16] if start_time else "—"
+        end_str = end_time[:16] if end_time else "в процессе"
+        
+        # Статус
+        status_icon = "✅" if status == "completed" else "🟡"
+        
+        text += f"{status_icon} {eq_name} ({eq_model})\n"
+        text += f"   Начало: {start_str}\n"
+        text += f"   Окончание: {end_str}\n"
+        text += f"   ID: {shift_id}\n\n"
+    
+    text += "Всего смен: " + str(len(shifts))
+    
+    await message.answer(text)
 
 @dp.message(F.text == "ℹ️  Информация")
 async def show_info(message: types.Message):
     await message.answer(
-        "🤖 ТЕХКОНТРОЛЬ MVP v1.0\n\n"
-        "Это тестовая версия бота для управления спецтехникой.\n\n"
-        "Функции в разработке:\n"
+        "🤖 ТЕХКОНТРОЛЬ MVP v1.1\n\n"
+        "Версия с завершением смены.\n\n"
+        "Доступные функции:\n"
         "✅ Начало смены\n"
         "✅ Инструктаж по безопасности\n"
         "✅ Предсменный осмотр\n"
-        "🔄 История смен\n"
+        "✅ Завершение смены\n"
+        "✅ История смен (5 последних)\n"
         "🔄 Интеграция с AI\n"
         "🔄 Веб-админка\n\n"
         "По вопросам: свяжитесь с разработчиком."
